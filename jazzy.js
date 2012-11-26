@@ -41,7 +41,9 @@ var Jazzy = Jazzy || {};
     fileName = fs.absolute(fileName);
     if (ns.injectedScripts.indexOf(fileName) > -1) {
       dlog("Skipping repeated injection for: " + fileName);
+      return true;
     }
+    dlog("real injection for: " + fileName);
     ns.injectedScripts.push(fileName);
     return page.injectJs(fileName);
   };
@@ -289,6 +291,12 @@ var Jazzy = Jazzy || {};
         return fpath;
       }
     }
+
+    if (instrumentedFiles[fpath] !== undefined) {
+      dlog("Re-using already instrumented file at: " + instrumentedFiles[fpath]);
+      return instrumentedFiles[fpath];
+    }
+
     lines = ns.prepareCode(lines);
     var instrumented = [];
     var hasDescribe = false;
@@ -317,12 +325,9 @@ var Jazzy = Jazzy || {};
             idx = line.indexOf("(", idx);
             var part1 = line.substr(0, idx);
             var part2 = line.substr(idx, line.length);
-            var part3 = "";
-            idx = part2.indexOf("{");
-            if (idx > -1) {
-              part3 = part2.substr(idx, part2.length);
-              part2 = part2.substr(0, idx);
-            }
+            idx = findEndOfCondition(part2);
+            var part3 = part2.substr(idx, part2.length);
+            part2 = part2.substr(0, idx);
             var newLine = [part1, "(", coverCmd, "&&", part2, ")", part3].join("");
             instrumented.push(newLine);
           }
@@ -343,6 +348,25 @@ var Jazzy = Jazzy || {};
     return fpath;
   };
 
+  function findEndOfCondition(fragment) {
+    var count = 0;
+    var start = fragment.indexOf("(");
+    for (var i = start; i < fragment.length; i++) {
+      switch (fragment[i]) {
+        case "(":
+          count++;
+          break;
+        case ")":
+          count--;
+          break;
+        default:
+          continue;
+      }
+      if (count == 0) return i + 1;
+    }
+    return fragment.length;
+  }
+
   function testInstrumentedFile(fpath, srcpath) {
     // tests if an instrumented file is OK for inclusion
     // -- if instrumentation causes brokenness, the original file is
@@ -350,11 +374,25 @@ var Jazzy = Jazzy || {};
     var testPage = ns.webpage.create();
     var works = true;
     testPage.onError = function(msg, trace) {
+      console.log(msg);
       works = false;
     };
+    testPage.injectJs(ns.findFile("jasmine.js"));
     for (var i = 0; i < ns.injectedScripts.length; i++)
       testPage.injectJs(ns.injectedScripts[i]); // may be required for this one to work
     testPage.injectJs(fpath);
+    if (globalOptions.debug && globalOptions.debugCopyTo) {
+      if (fs.isDirectory(globalOptions.debugCopyTo)) {
+        var toDump = [srcpath, fpath];
+        for (var i = 0; i < toDump.length; i++) {
+          var parts = toDump[i].split("/");
+          var dumpFile = [globalOptions.debugCopyTo, parts[parts.length-1]].join("/");
+          if (fs.isFile(dumpFile))
+            fs.remove(dumpFile);
+          fs.copy(toDump[i], dumpFile);
+        }
+      }
+    }
     if (!works) {
       console.log("Instrumentation on " + srcpath + " fails; no coverage will be done");
       instrumentedFiles[fpath] = null;
@@ -667,7 +705,7 @@ var Jazzy = Jazzy || {};
       "  --cover-references:  global flag for reference coverage",
       "  --cover-report:      output file name for the coverage report (defaults to coverage.html)",
       "  --debug:             show more information whilst running",
-      "  --load-references:   global flag to load references (default true)",
+      "  --load-references:   global flag to load references (see loadrefs spec part)",
       "  Switches are specified in the format {switch}={value}, for example:",
       "    --cover=true",
       "    --cover-report=SpecialReport.html",
@@ -676,7 +714,7 @@ var Jazzy = Jazzy || {};
       "  eg: cover:../../foo.js",
       "  available switches:",
       "    cover:     instruments and covers the file in the output report (experimental)",
-      "    loadrefs:  loads files referenced with /// <reference... (turn off global switch to apply this per file)",
+      "    loadrefs:  loads files referenced with /// <reference...",
       "    coverrefs: covers referenced files too"
       ];
     console.log(help.join("\n"));
@@ -689,7 +727,8 @@ var Jazzy = Jazzy || {};
     loadRefs: true,
     debug: false,
     coverIgnores: [],
-    coverageReport: "coverage.html"
+    coverageReport: "coverage.html",
+    debugCopyTo: "C:/tmp"
   };
 
   function grokBooleanSwitch(str) {
@@ -742,6 +781,9 @@ var Jazzy = Jazzy || {};
           break;
         case "cover-report":
           globalOptions.coverageReport = value;
+          break;
+        case "debug":
+          globalOptions.debug = grokBooleanSwitch(str);
           break;
         case "help":
           showHelp();
